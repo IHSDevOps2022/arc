@@ -13,9 +13,9 @@ from urllib.parse import quote_plus
 class MediaStoryKeywordSearcher:
     def __init__(self):
         self.media_sources = self._initialize_media_sources()
-        self.experts_df = None
+        self.contacts_df = None  # Changed from experts_df to contacts_df
         self.search_results = defaultdict(list)
-        self.expert_mentions = defaultdict(list)
+        self.contact_mentions = defaultdict(list)  # Changed from expert_mentions
         # Hardcoded keywords list
         self.keywords = [
             "Sexual harassment", "Sexual Assault", "Rape", "Raping", "Grope", "Groping", 
@@ -99,26 +99,62 @@ class MediaStoryKeywordSearcher:
             }
         }
     
-    def load_experts(self, experts_path):
-        """Load experts from Excel file"""
+    def load_contacts(self, contacts_path):
+        """Load contacts from Salesforce Excel file"""
         try:
-            self.experts_df = pd.read_excel(experts_path)
-            print(f"\n✓ Loaded experts data: {len(self.experts_df)} experts")
+            # Read the Excel file - the data starts at row 11 (0-indexed)
+            self.contacts_df = pd.read_excel(contacts_path, skiprows=10)
             
-            # Standardize column names
-            self.experts_df.columns = self.experts_df.columns.str.lower().str.strip()
+            # The first row contains empty cells and actual headers mixed
+            # We need to clean up the column names
+            # Based on the file structure, the actual columns are:
+            col_mapping = {
+                self.contacts_df.columns[1]: 'salutation',
+                self.contacts_df.columns[3]: 'firstname',
+                self.contacts_df.columns[4]: 'lastname',
+                self.contacts_df.columns[5]: 'title',
+                self.contacts_df.columns[6]: 'account_name',
+                self.contacts_df.columns[7]: 'mailing_street',
+                self.contacts_df.columns[8]: 'mailing_city',
+                self.contacts_df.columns[9]: 'mailing_state',
+                self.contacts_df.columns[10]: 'mailing_zip',
+                self.contacts_df.columns[11]: 'mailing_country',
+                self.contacts_df.columns[12]: 'phone',
+                self.contacts_df.columns[13]: 'fax',
+                self.contacts_df.columns[14]: 'mobile',
+                self.contacts_df.columns[15]: 'email',
+                self.contacts_df.columns[16]: 'account_owner'
+            }
+            
+            # Rename columns
+            self.contacts_df.rename(columns=col_mapping, inplace=True)
+            
+            # Drop rows where the first column contains header info
+            self.contacts_df = self.contacts_df[self.contacts_df['firstname'] != 'First Name'].copy()
+            
+            # Reset index
+            self.contacts_df.reset_index(drop=True, inplace=True)
+            
+            print(f"\n✓ Loaded Salesforce contacts data: {len(self.contacts_df)} contacts")
             
             # Create full name column
-            if 'firstname' in self.experts_df.columns and 'lastname' in self.experts_df.columns:
-                self.experts_df['full_name'] = (
-                    self.experts_df['firstname'].astype(str).str.strip() + ' ' + 
-                    self.experts_df['lastname'].astype(str).str.strip()
-                )
-                self.experts_df['full_name_lower'] = self.experts_df['full_name'].str.lower()
+            self.contacts_df['full_name'] = (
+                self.contacts_df['firstname'].astype(str).str.strip() + ' ' + 
+                self.contacts_df['lastname'].astype(str).str.strip()
+            )
+            self.contacts_df['full_name_lower'] = self.contacts_df['full_name'].str.lower()
+            
+            # Clean up NaN values
+            self.contacts_df['full_name'] = self.contacts_df['full_name'].str.replace('nan', '').str.strip()
+            
+            # Show summary
+            print(f"✓ Contacts with email: {self.contacts_df['email'].notna().sum()}")
+            print(f"✓ Contacts with title: {self.contacts_df['title'].notna().sum()}")
+            print(f"✓ Unique accounts: {self.contacts_df['account_name'].nunique()}")
             
             return True
         except Exception as e:
-            print(f"❌ Error loading experts file: {str(e)}")
+            print(f"❌ Error loading contacts file: {str(e)}")
             return False
     
     def search_rss_feeds(self, days_back=7):
@@ -161,16 +197,17 @@ class MediaStoryKeywordSearcher:
                             'published': entry.get('published', 'Unknown'),
                             'summary': entry.get('summary', '')[:200] + '...',
                             'keywords_found': matching_keywords,
-                            'experts_mentioned': []
+                            'contacts_mentioned': []  # Changed from experts_mentioned
                         }
                         
-                        # Check for expert mentions
-                        if self.experts_df is not None:
-                            for idx, expert in self.experts_df.iterrows():
-                                expert_name = expert.get('full_name', '')
-                                if expert_name and expert_name.lower() in content:
-                                    result['experts_mentioned'].append(expert_name)
-                                    self.expert_mentions[expert_name].append(result)
+                        # Check for contact mentions
+                        if self.contacts_df is not None:
+                            # Only check a subset for performance (first 1000 contacts)
+                            for idx, contact in self.contacts_df.head(1000).iterrows():
+                                contact_name = contact.get('full_name', '')
+                                if contact_name and len(contact_name) > 3 and contact_name.lower() in content:
+                                    result['contacts_mentioned'].append(contact_name)
+                                    self.contact_mentions[contact_name].append(result)
                         
                         source_results.append(result)
                         total_found += 1
@@ -211,16 +248,18 @@ class MediaStoryKeywordSearcher:
         report.append("# Media Coverage Analysis - Sensitive Content Monitoring")
         report.append(f"\n*Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
         report.append(f"\n**Total keywords monitored:** {len(self.keywords)}")
+        if self.contacts_df is not None:
+            report.append(f"**Total contacts in database:** {len(self.contacts_df)}")
         
         # Executive Summary
         total_articles = sum(len(articles) for articles in self.search_results.values())
-        total_expert_mentions = sum(len(mentions) for mentions in self.expert_mentions.values())
+        total_contact_mentions = sum(len(mentions) for mentions in self.contact_mentions.values())
         
         report.append(f"\n## Executive Summary")
         report.append(f"- Total articles found: {total_articles}")
         report.append(f"- Media outlets searched: {len(self.media_sources)}")
         report.append(f"- Keywords tracked: {len(self.keywords)}")
-        report.append(f"- Expert mentions found: {total_expert_mentions}")
+        report.append(f"- Contact mentions found: {total_contact_mentions}")
         
         # Coverage by Keyword
         report.append("\n## Coverage Analysis by Keyword\n")
@@ -269,22 +308,22 @@ class MediaStoryKeywordSearcher:
                     report.append(f"**{article['title']}**")
                     report.append(f"- Published: {article['published']}")
                     report.append(f"- Keywords: {', '.join(article['keywords_found'])}")
-                    if article['experts_mentioned']:
-                        report.append(f"- Experts mentioned: {', '.join(article['experts_mentioned'])}")
+                    if article['contacts_mentioned']:
+                        report.append(f"- Contacts mentioned: {', '.join(article['contacts_mentioned'])}")
                     report.append(f"- [Link]({article['url']})")
                     report.append("")
                 
                 if len(articles) > 5:
                     report.append(f"*... and {len(articles) - 5} more articles*\n")
         
-        # Expert Mentions
-        if self.expert_mentions:
-            report.append("\n## Expert Media Mentions\n")
-            report.append("*Experts from your database mentioned in media coverage:*\n")
+        # Contact Mentions
+        if self.contact_mentions:
+            report.append("\n## Salesforce Contact Media Mentions\n")
+            report.append("*Contacts from your database mentioned in media coverage:*\n")
             
-            for expert, mentions in sorted(self.expert_mentions.items(), 
+            for contact, mentions in sorted(self.contact_mentions.items(), 
                                          key=lambda x: len(x[1]), reverse=True):
-                report.append(f"### {expert}")
+                report.append(f"### {contact}")
                 report.append(f"*Mentioned in {len(mentions)} articles*\n")
                 
                 for mention in mentions[:3]:
@@ -314,9 +353,9 @@ class MediaStoryKeywordSearcher:
                     'published': article['published'],
                     'summary': article['summary'],
                     'keywords_found': ', '.join(article['keywords_found']),
-                    'experts_mentioned': ', '.join(article['experts_mentioned']),
+                    'contacts_mentioned': ', '.join(article['contacts_mentioned']),
                     'num_keywords': len(article['keywords_found']),
-                    'has_expert_mention': len(article['experts_mentioned']) > 0
+                    'has_contact_mention': len(article['contacts_mentioned']) > 0
                 }
                 all_results.append(record)
         
@@ -336,12 +375,12 @@ class MediaStoryKeywordSearcher:
             'summary': {
                 'total_articles': sum(len(articles) for articles in self.search_results.values()),
                 'total_sources': len([s for s, articles in self.search_results.items() if articles]),
-                'total_expert_mentions': sum(len(mentions) for mentions in self.expert_mentions.values())
+                'total_contact_mentions': sum(len(mentions) for mentions in self.contact_mentions.values())
             },
             'keyword_metrics': {},
             'source_metrics': {},
             'timeline': defaultdict(lambda: defaultdict(int)),
-            'expert_visibility': {}
+            'contact_visibility': {}
         }
         
         # Calculate metrics
@@ -374,9 +413,9 @@ class MediaStoryKeywordSearcher:
                 except:
                     pass
         
-        # Expert visibility
-        for expert, mentions in self.expert_mentions.items():
-            dashboard_data['expert_visibility'][expert] = {
+        # Contact visibility
+        for contact, mentions in self.contact_mentions.items():
+            dashboard_data['contact_visibility'][contact] = {
                 'mention_count': len(mentions),
                 'sources': list(set(m['source'] for m in mentions))
             }
@@ -409,13 +448,15 @@ if __name__ == "__main__":
     
     print(f"Monitoring {len(searcher.keywords)} keywords for sensitive content")
     
-    # Load experts (optional)
-    load_experts = input("\nLoad experts database? (y/n) [y]: ").strip().lower()
-    if load_experts != 'n':
-        experts_path = input("Enter path to Experts.xlsx [/users/jronyak/desktop/Experts.xlsx]: ").strip()
-        if not experts_path:
-            experts_path = "/users/jronyak/desktop/Experts.xlsx"
-        searcher.load_experts(experts_path)
+    # Load contacts from Salesforce
+    load_contacts = input("\nLoad Salesforce contacts database? (y/n) [y]: ").strip().lower()
+    if load_contacts != 'n':
+        contacts_path = input("Enter path to Salesforce Contracts.xlsx [Salesforce Contracts.xlsx]: ").strip()
+        if not contacts_path:
+            contacts_path = "Salesforce Contracts.xlsx"
+        
+        if not searcher.load_contacts(contacts_path):
+            print("⚠️  Continuing without contacts database...")
     
     # Search time range
     days_input = input("\nSearch articles from last N days [7]: ").strip()
